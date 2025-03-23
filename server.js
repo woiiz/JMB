@@ -1,3 +1,4 @@
+// server.js
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -5,21 +6,21 @@ const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const { CosmosClient } = require('@azure/cosmos');
 const cloudinary = require('cloudinary').v2;
-const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Enable CORS
+// Middleware
 app.use(cors());
-app.use(express.json()); 
+app.use(express.json());
 
 // Configure Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
+  api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
 // Configure Cosmos DB connection
@@ -31,141 +32,104 @@ const container = database.container(process.env.CONTAINER_ID);
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// JWT Secret
-const JWT_SECRET_KEY = process.env.JWT_SECRET_KEY;
+// JWT Authentication middleware
+function authenticateJWT(req, res, next) {
+  const token = req.header('Authorization')?.split(' ')[1];
+  if (!token) {
+    return res.status(403).json({ message: 'Access Denied' });
+  }
+  jwt.verify(token, process.env.JWT_SECRET_KEY, (err, user) => {
+    if (err) {
+      return res.status(403).json({ message: 'Invalid Token' });
+    }
+    req.user = user;
+    next();
+  });
+}
 
-// Registration route
+// Register User
 app.post('/register', async (req, res) => {
+  const { username, password } = req.body;
+  const hashedPassword = await bcrypt.hash(password, 10);
+  const user = {
+    id: uuidv4(),
+    username,
+    password: hashedPassword,
+  };
+
+  // Save to Cosmos DB (users container)
   try {
-    const { username, password } = req.body;
-
-    if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password are required' });
-    }
-
-    // Check if user already exists in Cosmos DB
-    const querySpec = {
-      query: 'SELECT * FROM c WHERE c.username = @username',
-      parameters: [
-        {
-          name: '@username',
-          value: username
-        }
-      ]
-    };
-    
-    const { resources } = await container.items.query(querySpec).fetchAll();
-    
-    if (resources.length > 0) {
-      return res.status(400).json({ error: 'User already exists' });
-    }
-
-    // Hash the password
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    const user = {
-      id: uuidv4(),
-      username,
-      password: hashedPassword
-    };
-
-    // Save the user to Cosmos DB
     await container.items.create(user);
-
     res.json({ message: 'User registered successfully' });
   } catch (error) {
-    res.status(500).json({ error: 'Error registering user' });
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
-// Login route
+// Login User
 app.post('/login', async (req, res) => {
+  const { username, password } = req.body;
+  const query = `SELECT * FROM c WHERE c.username = '${username}'`;
+  
   try {
-    const { username, password } = req.body;
-
-    if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password are required' });
-    }
-
-    // Find the user in Cosmos DB
-    const querySpec = {
-      query: 'SELECT * FROM c WHERE c.username = @username',
-      parameters: [
-        {
-          name: '@username',
-          value: username
-        }
-      ]
-    };
-    
-    const { resources } = await container.items.query(querySpec).fetchAll();
-    
+    const { resources } = await container.items.query(query).fetchAll();
     if (resources.length === 0) {
-      return res.status(400).json({ error: 'User not found' });
+      return res.status(400).json({ message: 'Invalid username or password' });
     }
 
     const user = resources[0];
-
-    // Compare the hashed password
-    const isMatch = await bcrypt.compare(password, user.password);
-
-    if (!isMatch) {
-      return res.status(400).json({ error: 'Invalid credentials' });
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) {
+      return res.status(400).json({ message: 'Invalid username or password' });
     }
 
-    // Create JWT token
-    const token = jwt.sign({ userId: user.id }, JWT_SECRET_KEY, { expiresIn: '1h' });
-
-    res.json({ message: 'Login successful', token });
+    const token = jwt.sign({ id: user.id, username: user.username }, process.env.JWT_SECRET_KEY, { expiresIn: '1h' });
+    res.json({ token });
   } catch (error) {
-    res.status(500).json({ error: 'Error logging in user' });
+    res.status(500).json({ error: 'Login error' });
   }
 });
 
-// Middleware to verify JWT token
-const verifyToken = (req, res, next) => {
-  const token = req.header('Authorization')?.replace('Bearer ', '');
-
-  if (!token) {
-    return res.status(401).json({ error: 'Access denied, no token provided' });
+// File upload to Cloudinary
+app.post('/upload', authenticateJWT, upload.single('image'), async (req, res) => {
+  const file = req.file;
+  if (!file) {
+    return res.status(400).json({ error: 'No file uploaded' });
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET_KEY);
-    req.user = decoded;
-    next();
+    const result = await cloudinary.uploader.upload_stream((error, result) => {
+      if (error) {
+        return res.status(500).json({ error: 'Cloudinary upload failed' });
+      }
+      res.json({ imageUrl: result.secure_url });
+    }).end(file.buffer);
   } catch (error) {
-    res.status(400).json({ error: 'Invalid or expired token' });
+    res.status(500).json({ error: 'Server error' });
   }
-};
+});
 
-// Test API to verify if JWT is working
+// Save user swipe data to Cosmos DB
+app.post('/swipe', authenticateJWT, async (req, res) => {
+  const { action } = req.body;
+  const item = {
+    id: uuidv4(),
+    userId: req.user.id,
+    action,
+    timestamp: new Date().toISOString(),
+  };
+
+  try {
+    await container.items.create(item);
+    res.json({ message: 'Swipe recorded', data: item });
+  } catch (error) {
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Test API
 app.get('/test', (req, res) => {
   res.json({ message: 'Backend is running!' });
-});
-
-// Endpoint to upload images (protected route)
-app.post('/upload', verifyToken, upload.single('image'), async (req, res) => {
-  try {
-    const result = await cloudinary.uploader.upload_stream(
-      { resource_type: 'auto', folder: 'jalang_malay' },
-      async (error, result) => {
-        if (error) {
-          return res.status(500).json({ error: 'Image upload failed' });
-        }
-
-        const imageUrl = result.secure_url;
-
-        // Save image URL in Cosmos DB or perform other actions here
-
-        res.json({ message: 'Image uploaded successfully', imageUrl });
-      }
-    );
-
-    req.pipe(result);
-  } catch (error) {
-    res.status(500).json({ error: 'Error uploading image' });
-  }
 });
 
 // Start server
