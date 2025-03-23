@@ -122,9 +122,50 @@ app.post('/login', async (req, res) => {
   }
 });
 
+// Middleware to verify JWT token
+const verifyToken = (req, res, next) => {
+  const token = req.header('Authorization')?.replace('Bearer ', '');
+
+  if (!token) {
+    return res.status(401).json({ error: 'Access denied, no token provided' });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET_KEY);
+    req.user = decoded;
+    next();
+  } catch (error) {
+    res.status(400).json({ error: 'Invalid or expired token' });
+  }
+};
+
 // Test API to verify if JWT is working
 app.get('/test', (req, res) => {
   res.json({ message: 'Backend is running!' });
+});
+
+// Endpoint to upload images (protected route)
+app.post('/upload', verifyToken, upload.single('image'), async (req, res) => {
+  try {
+    const result = await cloudinary.uploader.upload_stream(
+      { resource_type: 'auto', folder: 'jalang_malay' },
+      async (error, result) => {
+        if (error) {
+          return res.status(500).json({ error: 'Image upload failed' });
+        }
+
+        const imageUrl = result.secure_url;
+
+        // Save image URL in Cosmos DB or perform other actions here
+
+        res.json({ message: 'Image uploaded successfully', imageUrl });
+      }
+    );
+
+    req.pipe(result);
+  } catch (error) {
+    res.status(500).json({ error: 'Error uploading image' });
+  }
 });
 
 // Start server
