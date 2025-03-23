@@ -9,81 +9,73 @@ const cloudinary = require('cloudinary').v2;
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Middleware
-app.use(express.json());
+// Enable CORS
 app.use(cors());
+app.use(express.json()); 
 
-// Azure Cosmos DB setup
-const cosmosClient = new CosmosClient(process.env.COSMOS_DB_CONNECTION_STRING);
-const database = cosmosClient.database("jalangmalayDB");
-const container = database.container("Swipes");
-
-// Cloudinary setup for image uploads
+// Configure Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// Multer storage setup
+// Configure Cosmos DB connection
+const cosmosClient = new CosmosClient(process.env.AZURE_COSMOS_DB_CONNECTION_STRING);
+const database = cosmosClient.database(process.env.DATABASE_ID);
+const container = database.container(process.env.CONTAINER_ID);
+
+// Multer setup for file uploads
 const storage = multer.memoryStorage();
-const upload = multer({ storage });
+const upload = multer({ storage: storage });
 
-// Default route (check if backend is working)
-app.get('/', (req, res) => {
-    res.json({ message: "Backend is working!" });
+// Test API
+app.get('/test', (req, res) => {
+  res.json({ message: "Backend is running!" });
 });
 
-// Upload image route
+// File upload to Cloudinary
 app.post('/upload', upload.single('image'), async (req, res) => {
-    try {
-        if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-
-        const result = await cloudinary.uploader.upload_stream({ resource_type: "image" }, (error, uploadResult) => {
-            if (error) return res.status(500).json({ error: "Upload failed" });
-            res.json({ imageUrl: uploadResult.secure_url });
-        }).end(req.file.buffer);
-
-    } catch (error) {
-        res.status(500).json({ error: "Server error" });
+  try {
+    const file = req.file;
+    if (!file) {
+      return res.status(400).json({ error: "No file uploaded" });
     }
+
+    const result = await cloudinary.uploader.upload_stream((error, result) => {
+      if (error) {
+        return res.status(500).json({ error: "Cloudinary upload failed" });
+      }
+      res.json({ imageUrl: result.secure_url });
+    }).end(file.buffer);
+  } catch (error) {
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
-// Swipe action route
+// Save user swipe data to Cosmos DB
 app.post('/swipe', async (req, res) => {
-    const { userId, targetUserId, action } = req.body;
-
-    if (!userId || !targetUserId || !action) {
-        return res.status(400).json({ error: "Missing required fields" });
+  try {
+    const { userId, action } = req.body;
+    if (!userId || !action) {
+      return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const swipeData = {
-        id: uuidv4(),
-        userId,
-        targetUserId,
-        action,
-        timestamp: new Date().toISOString()
+    const item = {
+      id: uuidv4(),
+      userId,
+      action,
+      timestamp: new Date().toISOString()
     };
 
-    try {
-        await container.items.create(swipeData);
-        res.json({ success: true, data: swipeData });
-    } catch (error) {
-        res.status(500).json({ error: "Database error" });
-    }
-});
-
-// Get all swipes
-app.get('/swipes', async (req, res) => {
-    try {
-        const { resources } = await container.items.readAll().fetchAll();
-        res.json(resources);
-    } catch (error) {
-        res.status(500).json({ error: "Database error" });
-    }
+    await container.items.create(item);
+    res.json({ message: "Swipe recorded", data: item });
+  } catch (error) {
+    res.status(500).json({ error: "Database error" });
+  }
 });
 
 // Start server
 app.listen(port, () => {
-    console.log(`Server is running on port ${port}`);
+  console.log(`Server running on port ${port}`);
 });
