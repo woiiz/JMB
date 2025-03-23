@@ -3,7 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
-const { CosmosClient } = require("@azure/cosmos");
+const { CosmosClient } = require('@azure/cosmos');
 const cloudinary = require('cloudinary').v2;
 
 const app = express();
@@ -11,7 +11,7 @@ const port = process.env.PORT || 3000;
 
 // Enable CORS
 app.use(cors());
-app.use(express.json()); 
+app.use(express.json());
 
 // Configure Cloudinary
 cloudinary.config({
@@ -20,8 +20,11 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// Configure Cosmos DB connection
-const cosmosClient = new CosmosClient(process.env.AZURE_COSMOS_DB_CONNECTION_STRING);
+// Configure Cosmos DB connection using the connection string
+const cosmosClient = new CosmosClient({
+  endpoint: process.env.COSMOS_ENDPOINT,
+  key: process.env.COSMOS_KEY
+});
 const database = cosmosClient.database(process.env.DATABASE_ID);
 const container = database.container(process.env.CONTAINER_ID);
 
@@ -31,7 +34,7 @@ const upload = multer({ storage: storage });
 
 // Test API
 app.get('/test', (req, res) => {
-  res.json({ message: "Backend is running!" });
+  res.json({ message: 'Backend is running!' });
 });
 
 // File upload to Cloudinary
@@ -39,17 +42,17 @@ app.post('/upload', upload.single('image'), async (req, res) => {
   try {
     const file = req.file;
     if (!file) {
-      return res.status(400).json({ error: "No file uploaded" });
+      return res.status(400).json({ error: 'No file uploaded' });
     }
 
     const result = await cloudinary.uploader.upload_stream((error, result) => {
       if (error) {
-        return res.status(500).json({ error: "Cloudinary upload failed" });
+        return res.status(500).json({ error: 'Cloudinary upload failed' });
       }
       res.json({ imageUrl: result.secure_url });
     }).end(file.buffer);
   } catch (error) {
-    res.status(500).json({ error: "Server error" });
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
@@ -58,7 +61,7 @@ app.post('/swipe', async (req, res) => {
   try {
     const { userId, action } = req.body;
     if (!userId || !action) {
-      return res.status(400).json({ error: "Missing required fields" });
+      return res.status(400).json({ error: 'Missing required fields' });
     }
 
     const item = {
@@ -69,9 +72,9 @@ app.post('/swipe', async (req, res) => {
     };
 
     await container.items.create(item);
-    res.json({ message: "Swipe recorded", data: item });
+    res.json({ message: 'Swipe recorded', data: item });
   } catch (error) {
-    res.status(500).json({ error: "Database error" });
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
