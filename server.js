@@ -5,13 +5,15 @@ const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const { CosmosClient } = require('@azure/cosmos');
 const cloudinary = require('cloudinary').v2;
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
 // Enable CORS
 app.use(cors());
-app.use(express.json());
+app.use(express.json()); 
 
 // Configure Cloudinary
 cloudinary.config({
@@ -20,11 +22,8 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// Configure Cosmos DB connection using the connection string
-const cosmosClient = new CosmosClient({
-  endpoint: process.env.COSMOS_ENDPOINT,
-  key: process.env.COSMOS_KEY
-});
+// Configure Cosmos DB connection
+const cosmosClient = new CosmosClient(process.env.AZURE_COSMOS_DB_CONNECTION_STRING);
 const database = cosmosClient.database(process.env.DATABASE_ID);
 const container = database.container(process.env.CONTAINER_ID);
 
@@ -32,50 +31,100 @@ const container = database.container(process.env.CONTAINER_ID);
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// Test API
-app.get('/test', (req, res) => {
-  res.json({ message: 'Backend is running!' });
-});
+// JWT Secret
+const JWT_SECRET_KEY = process.env.JWT_SECRET_KEY;
 
-// File upload to Cloudinary
-app.post('/upload', upload.single('image'), async (req, res) => {
+// Registration route
+app.post('/register', async (req, res) => {
   try {
-    const file = req.file;
-    if (!file) {
-      return res.status(400).json({ error: 'No file uploaded' });
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password are required' });
     }
 
-    const result = await cloudinary.uploader.upload_stream((error, result) => {
-      if (error) {
-        return res.status(500).json({ error: 'Cloudinary upload failed' });
-      }
-      res.json({ imageUrl: result.secure_url });
-    }).end(file.buffer);
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Save user swipe data to Cosmos DB
-app.post('/swipe', async (req, res) => {
-  try {
-    const { userId, action } = req.body;
-    if (!userId || !action) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    // Check if user already exists in Cosmos DB
+    const querySpec = {
+      query: 'SELECT * FROM c WHERE c.username = @username',
+      parameters: [
+        {
+          name: '@username',
+          value: username
+        }
+      ]
+    };
+    
+    const { resources } = await container.items.query(querySpec).fetchAll();
+    
+    if (resources.length > 0) {
+      return res.status(400).json({ error: 'User already exists' });
     }
 
-    const item = {
+    // Hash the password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const user = {
       id: uuidv4(),
-      userId,
-      action,
-      timestamp: new Date().toISOString()
+      username,
+      password: hashedPassword
     };
 
-    await container.items.create(item);
-    res.json({ message: 'Swipe recorded', data: item });
+    // Save the user to Cosmos DB
+    await container.items.create(user);
+
+    res.json({ message: 'User registered successfully' });
   } catch (error) {
-    res.status(500).json({ error: 'Database error' });
+    res.status(500).json({ error: 'Error registering user' });
   }
+});
+
+// Login route
+app.post('/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password are required' });
+    }
+
+    // Find the user in Cosmos DB
+    const querySpec = {
+      query: 'SELECT * FROM c WHERE c.username = @username',
+      parameters: [
+        {
+          name: '@username',
+          value: username
+        }
+      ]
+    };
+    
+    const { resources } = await container.items.query(querySpec).fetchAll();
+    
+    if (resources.length === 0) {
+      return res.status(400).json({ error: 'User not found' });
+    }
+
+    const user = resources[0];
+
+    // Compare the hashed password
+    const isMatch = await bcrypt.compare(password, user.password);
+
+    if (!isMatch) {
+      return res.status(400).json({ error: 'Invalid credentials' });
+    }
+
+    // Create JWT token
+    const token = jwt.sign({ userId: user.id }, JWT_SECRET_KEY, { expiresIn: '1h' });
+
+    res.json({ message: 'Login successful', token });
+  } catch (error) {
+    res.status(500).json({ error: 'Error logging in user' });
+  }
+});
+
+// Test API to verify if JWT is working
+app.get('/test', (req, res) => {
+  res.json({ message: 'Backend is running!' });
 });
 
 // Start server
