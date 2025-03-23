@@ -1,39 +1,38 @@
 const express = require("express");
-const { CosmosClient } = require("@azure/cosmos");
-require("dotenv").config();
+const multer = require("multer");
+const cors = require("cors");
 
 const app = express();
-const port = process.env.PORT || 10000;
-
+app.use(cors());
 app.use(express.json());
 
-// Sambungan ke Azure Cosmos DB
-const cosmosClient = new CosmosClient({
-  endpoint: process.env.COSMOS_ENDPOINT,
-  key: process.env.COSMOS_KEY,
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
+
+// Simpan gambar dalam Cloudinary (atau guna file storage lain)
+const cloudinary = require("cloudinary").v2;
+cloudinary.config({
+    cloud_name: "YOUR_CLOUD_NAME",
+    api_key: "YOUR_API_KEY",
+    api_secret: "YOUR_API_SECRET"
 });
 
-const database = cosmosClient.database(process.env.DATABASE_ID);
-const container = database.container(process.env.CONTAINER_ID);
-
-// API untuk menyimpan data swipe
-app.post("/swipe", async (req, res) => {
-  try {
-    const { userId, targetUserId, action } = req.body;
-    const { resource: createdItem } = await container.items.create({
-      userId,
-      targetUserId,
-      action,
-      timestamp: new Date().toISOString(),
-    });
-
-    res.json({ success: true, data: createdItem });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+// Upload gambar endpoint
+app.post("/upload", upload.single("image"), async (req, res) => {
+    try {
+        const result = await cloudinary.uploader.upload_stream(
+            { resource_type: "image" },
+            (error, result) => {
+                if (error) return res.status(500).json({ error: "Upload failed" });
+                res.json({ imageUrl: result.secure_url });
+            }
+        ).end(req.file.buffer);
+    } catch (error) {
+        res.status(500).json({ error: "Something went wrong" });
+    }
 });
 
-// Mulakan server
-app.listen(port, () => {
-  console.log(`Server running at http://localhost:${port}`);
+// Jalankan server
+app.listen(3000, () => {
+    console.log("Server running on port 3000");
 });
